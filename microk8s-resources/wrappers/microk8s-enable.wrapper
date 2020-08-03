@@ -1,64 +1,60 @@
-#!/bin/bash
+#!/usr/bin/python3
+
+import sys
+import textwrap
+from pathlib import Path
+from subprocess import run
+
+import click
+
+from utils import check_clustering
+
+PARENT = Path(__file__).absolute().parent
+ADDONS = {sh.with_suffix('').name[7:] for sh in PARENT.glob('actions/enable.*.sh')}
 
 
-export PATH="$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin:$PATH"
-ARCH="$($SNAP/bin/uname -m)"
-export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$SNAP/lib:$SNAP/usr/lib:$SNAP/lib/$ARCH-linux-gnu:$SNAP/usr/lib/$ARCH-linux-gnu"
-export LD_LIBRARY_PATH=$SNAP_LIBRARY_PATH:$LD_LIBRARY_PATH
+@click.command(context_settings={'ignore_unknown_options': True})
+@click.argument('addons', nargs=-1, required=True)
+def enable(addons):
+    check_clustering()
 
-source $SNAP/actions/common/utils.sh
+    if all(a.split(':')[0] in ADDONS for a in addons) and len(addons) > 1:
+        for addon in addons:
+            addon, *args = addon.split(':')
+            run([PARENT / ('actions/enable.%s.sh' % addon)] + args.split(';'))
+    else:
+        addon, *args = addons[0].split(':')
 
-if [ -e ${SNAP_DATA}/var/lock/clustered.lock ]
-then
-  echo "This MicroK8s deployment is acting as a node in a cluster. Please use the microk8s enable on the master."
-  exit 0
-fi
+        if addon not in ADDONS:
+            click.secho("Addon `%s` not found." % addon, fg='red', err=True)
+            click.echo("The available addons are:\n - %s" % '\n - '.join(ADDONS), err=True)
+            sys.exit(1)
 
-if echo "$*" | grep -q -- '--help'; then
-    LD_LIBRARY_PATH=$IN_SNAP_LD_LIBRARY_PATH ${SNAP}/usr/bin/python3 ${SNAP}/scripts/wrappers/enable.py $@
-    exit
-fi
+        if args and addons[1:]:
+            click.secho(
+                click.style(
+                    "Can't pass string arguments and flag arguments simultaneously!\n", fg='red'
+                )
+                + textwrap.dedent(
+                    """
+                    Enable an addon with only one argument style at a time:
 
-exit_if_stopped
-exit_if_no_permissions
+                        microk8s.enable foo:'bar'
+                    or
 
-result=1
-for addon in "$@"; do
-  # Making sure the cluster is up and running before each addon
-  action="$(addon_name $addon)"
-  arguments="$(addon_arguments $addon)"
-  # Check if the addon is already enabled, then skip.
-  if ${SNAP}/microk8s-status.wrapper --wait-ready --timeout 30 --addon $action | grep "enabled" >/dev/null; then
-    echo "Addon $action is already enabled."
-    result=0
-    continue
-  fi
-  
-  # If there is a script to execute for the $action run the script and ignore any yamls
-  if [ -f "${SNAP}/actions/enable.$action.sh" ]; then
-    "${SNAP}/actions/enable.$action.sh" "${arguments}"
-    enable_result="$?"
-    if [ "$enable_result" = "0" ]
-    then
-      result=0
-    else
-      echo "Failed to enable $action"
-      exit 1
-    fi
-  elif [ -f "${SNAP}/actions/$action.yaml" ]; then
-    echo "Enabling $action"
-    use_manifest $action apply
-    if [ "$use_manifest_result" = "0" ]
-    then
-      echo "$action enabled"
-      result=0
-    else
-      echo "Failed to enable $action"
-      exit 1
-    fi
-  else
-    echo "Nothing to do for $action"
-    exit 2
-  fi
-done
-exit $result
+                        microk8s.enable foo --bar
+                """
+                ),
+                err=True,
+            )
+            sys.exit(1)
+
+        script = [PARENT / ('actions/enable.%s.sh' % addon)]
+        if args:
+            run(script + args)
+        else:
+            run(script + list(addons[1:]))
+
+
+if __name__ == '__main__':
+    enable(prog_name='microk8s enable')
